@@ -9,6 +9,12 @@ dependencies = [
     "pydantic",
 ]
 
+[dependency-groups]
+dev = [
+    "flake8",
+    "mypy",
+]
+
 [[tool.uv.index]]
 name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
@@ -18,8 +24,5 @@ explicit = true
 llm-sdk = { path = "llm_sdk" }
 torch = { index = "pytorch-cpu" }
 
-[dependency-groups]
-dev = [
-    "flake8>=7.4.1",
-    "mypy>=2.4.1",
-]
+[tool.mypy]
+exclude = ["^llm_sdk/", "^\\.venv/"]

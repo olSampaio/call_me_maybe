@@ -1,15 +1,6 @@
-# Ambiente virtual
 .venv/
-
-# Caches do Python e das ferramentas
 __pycache__/
 *.pyc
 .mypy_cache/
-.pytest_cache/
-
-# Saída gerada pelo programa (o enunciado pede para não incluir)
 data/output/
 output/
-
-# Experimentos locais
-scratch.py
