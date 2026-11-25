@@ -120,6 +120,9 @@ class Vocabulary(BaseModel):
     _strings: tuple[frozenset[int], dict[int, str]] | None = PrivateAttr(
         default=None
     )
+    _openers: dict[str, tuple[dict[int, str], dict[int, str]]] = PrivateAttr(
+        default_factory=dict
+    )
 
     @field_validator("texts")
     @classmethod
@@ -263,3 +266,41 @@ class Vocabulary(BaseModel):
                     ends[token_id] = text[:end]
             self._strings = (frozenset(plain), ends)
         return self._strings
+
+    def string_openers(
+        self, opener: str = ' "'
+    ) -> tuple[dict[int, str], dict[int, str]]:
+        """Classify the tokens that can open a JSON string.
+
+        The result is cached for each `opener`.
+
+        Args:
+            opener: Text the token must start with, the opening quote and
+                whatever comes before it (by default a space).
+
+        Returns:
+            A pair (open, closed). `open` maps each token that starts the
+            string without ending it to the content it writes after the
+            opener. `closed` maps each token that also contains the closing
+            quote (such as ' ""') to the content between the two quotes.
+            Tokens with control characters or broken escapes are in neither.
+        """
+        found = self._openers.get(opener)
+        if found is None:
+            still_open: dict[int, str] = {}
+            closed: dict[int, str] = {}
+            for token_id in self._by_first_char.get(opener[:1], []):
+                text = self.texts[token_id]
+                if not text.startswith(opener):
+                    continue
+                rest = text[len(opener):]
+                valid, end = scan_json_string_token(rest)
+                if not valid:
+                    continue
+                if end is None:
+                    still_open[token_id] = rest
+                else:
+                    closed[token_id] = rest[:end]
+            found = (still_open, closed)
+            self._openers[opener] = found
+        return found

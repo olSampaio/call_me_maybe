@@ -1,6 +1,7 @@
 """Reading the input files and writing the output file."""
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -61,6 +62,12 @@ def load_functions(path: Path) -> list[FunctionDefinition]:
         raise FileError(f"Invalid content in {path}: {err}") from err
     if not functions:
         raise FileError(f"No function defined in {path}")
+    names = [function.name for function in functions]
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        raise FileError(
+            f"Duplicate function names in {path}: {', '.join(duplicates)}"
+        )
     return functions
 
 
@@ -81,6 +88,35 @@ def load_prompts(path: Path) -> list[PromptItem]:
         return TypeAdapter(list[PromptItem]).validate_python(data)
     except ValidationError as err:
         raise FileError(f"Invalid content in {path}: {err}") from err
+
+
+def check_output_path(path: Path) -> None:
+    """Make sure the output file can be written, before any slow work.
+
+    Missing folders are created. The file itself is not created.
+
+    Args:
+        path: The output file.
+
+    Returns:
+        None.
+
+    Raises:
+        FileError: If the path is a directory or its folder cannot be
+            created or written to.
+    """
+    if path.is_dir():
+        raise FileError(f"Output path is a directory: {path}")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as err:
+        raise FileError(f"Cannot create the folder of {path}: {err}") from err
+    if path.exists():
+        writable = os.access(path, os.W_OK)
+    else:
+        writable = os.access(path.parent, os.W_OK)
+    if not writable:
+        raise FileError(f"Cannot write {path}: permission denied")
 
 
 def save_calls(path: Path, calls: list[FunctionCall]) -> None:

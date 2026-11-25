@@ -2,7 +2,16 @@
 
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
+
+# Python-style spellings accepted in definition files, mapped to the
+# JSON-schema type they stand for.
+TYPE_ALIASES = {
+    "float": "number",
+    "int": "integer",
+    "bool": "boolean",
+    "str": "string",
+}
 
 
 class ParameterSpec(BaseModel):
@@ -13,6 +22,20 @@ class ParameterSpec(BaseModel):
     """
 
     type: str
+
+    @field_validator("type")
+    @classmethod
+    def _normalize_type(cls, value: str) -> str:
+        """Lower-case the type and replace Python-style aliases.
+
+        Args:
+            value: The type as written in the file.
+
+        Returns:
+            The JSON-schema type name (for example "float" -> "number").
+        """
+        value = value.strip().lower()
+        return TYPE_ALIASES.get(value, value)
 
 
 class FunctionDefinition(BaseModel):
@@ -26,7 +49,7 @@ class FunctionDefinition(BaseModel):
         returns: Type of the value the function returns.
     """
 
-    name: str
+    name: str = Field(min_length=1)
     description: str
     parameters: dict[str, ParameterSpec]
     returns: ParameterSpec

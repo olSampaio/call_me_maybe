@@ -7,7 +7,13 @@ from collections.abc import Callable
 from pathlib import Path
 
 from .decoding import GenerationError
-from .io_utils import FileError, load_functions, load_prompts, save_calls
+from .io_utils import (
+    FileError,
+    check_output_path,
+    load_functions,
+    load_prompts,
+    save_calls,
+)
 from .llm import ModelLoadError, load_model_and_vocab
 from .model_api import LanguageModel
 from .models import FunctionCall
@@ -71,6 +77,7 @@ def run(args: argparse.Namespace, load_model: ModelLoader) -> int:
     try:
         functions = load_functions(args.functions_definition)
         prompts = load_prompts(args.input)
+        check_output_path(args.output)
     except FileError as err:
         print(f"Error: {err}", file=sys.stderr)
         return 1
@@ -91,6 +98,16 @@ def run(args: argparse.Namespace, load_model: ModelLoader) -> int:
             failures += 1
             print(
                 f"[{position}/{len(prompts)}] FAILED {item.prompt!r}: {err}",
+                file=sys.stderr,
+            )
+            continue
+        except Exception as err:
+            # An error inside the model (for example out of memory) must
+            # not stop the other prompts.
+            failures += 1
+            print(
+                f"[{position}/{len(prompts)}] FAILED {item.prompt!r}: "
+                f"unexpected {type(err).__name__}: {err}",
                 file=sys.stderr,
             )
             continue
@@ -129,6 +146,12 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("Interrupted.", file=sys.stderr)
         return 130
+    except Exception as err:
+        # Last safety net: never end with a traceback.
+        print(
+            f"Error: unexpected {type(err).__name__}: {err}", file=sys.stderr
+        )
+        return 1
 
 
 if __name__ == "__main__":

@@ -11,11 +11,15 @@ from .vocabulary import Vocabulary
 MAX_NUMBER_CHARS = 30
 
 # A "prefix" regex accepts every text that can still become a valid
-# number; a "full" regex accepts only finished numbers.
-_NUMBER_PREFIX = re.compile(r"(?:-|-?(?:0|[1-9][0-9]*)(?:\.[0-9]*)?)?")
-_NUMBER_FULL = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?")
-_INTEGER_PREFIX = re.compile(r"(?:-|-?(?:0|[1-9][0-9]*))?")
-_INTEGER_FULL = re.compile(r"-?(?:0|[1-9][0-9]*)")
+# number; a "full" regex accepts only finished numbers. Both accept one
+# leading space: the context ends right after the colon, and the tokenizer
+# merges that space with what follows (' -', ' 4').
+_NUMBER_PREFIX = re.compile(
+    r" ?(?:-|-?(?:0|[1-9][0-9]*)(?:\.[0-9]*)?)?"
+)
+_NUMBER_FULL = re.compile(r" ?-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?")
+_INTEGER_PREFIX = re.compile(r" ?(?:-|-?(?:0|[1-9][0-9]*))?")
+_INTEGER_FULL = re.compile(r" ?-?(?:0|[1-9][0-9]*)")
 
 _NUMBER_START_CHARS = "-0123456789."
 _INTEGER_START_CHARS = "-0123456789"
@@ -39,6 +43,9 @@ def number_continuations(
     """
     prefix = _INTEGER_PREFIX if integer else _NUMBER_PREFIX
     start = _INTEGER_START_CHARS if integer else _NUMBER_START_CHARS
+    if not written:
+        # Only the first token may bring the leading space.
+        start = " " + start
     return {
         token_id
         for token_id in vocab.starting_with(start)
@@ -109,6 +116,7 @@ def generate_number(
         new_ids.append(token)
         written += vocab.texts[token]
 
+    written = written.strip()
     if integer:
         return int(written), new_ids
     value = float(written)

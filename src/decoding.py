@@ -152,6 +152,9 @@ def choose_boolean(
 ) -> tuple[bool, list[int]]:
     """Let the model choose between the JSON literals true and false.
 
+    The literals are written with their leading space (' true', ' false'),
+    because the context ends right after the colon of the key.
+
     Args:
         model: Language model that provides the logits and `encode`.
         vocab: Token id -> text table of that model.
@@ -164,6 +167,6 @@ def choose_boolean(
         GenerationError: If no token can continue the literal.
     """
     text, ids = _choose_literal(
-        model, vocab, context_ids, ["true", "false"], None
+        model, vocab, context_ids, [" true", " false"], None
     )
-    return text == "true", ids
+    return text.strip() == "true", ids

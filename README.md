@@ -77,7 +77,9 @@ written.
 ### Pieces of the JSON
 
 The answer is written in pieces. The fixed pieces (`{"name": "`, the keys,
-the punctuation) are encoded and appended to the context directly. The
+the punctuation) are encoded and appended to the context directly. Each
+fixed piece before a value stops right after the colon (`"a":`), never
+after the space: see "Token boundaries" below. The
 model is only asked to decide:
 
 1. which function to call,
@@ -103,6 +105,17 @@ as a printable character (a space is `Ġ`, a newline is `Ċ`).
 text it writes. Tokens that are only a fragment of a multi-byte character
 have no text of their own and are never used.
 
+### Token boundaries
+
+The Qwen tokenizer merges the space after a colon with what follows:
+`"a": -7.5` becomes `'":', ' -', '7', '.', '5'` and `"path": "/home`
+becomes `'":', ' "/', 'home'`. If the context ends with a lone space token
+(or a lone quote token), the model sees a split it never saw in training
+and makes mistakes: it dropped the minus sign of `-7.5`, the leading `/` of
+a path, and answered `true` to "Disable the beta flag". So the context
+always ends right after the colon, and the first token of every value
+brings the space (and, for a string, the opening quote) with it.
+
 ### Function name
 
 At each step the allowed tokens are those whose text is a prefix of what is
@@ -116,8 +129,9 @@ calling the model again, because the choice has already been made.
 
 A number is generated token by token. A token is allowed only if the text
 written so far plus the token is still a prefix of a valid number
-(`-?(0|[1-9][0-9]*)(\.[0-9]+)?`, so no leading zeros and one decimal point at
-most). Once the number is complete, any token that starts with `,` or `}` is
+(` ?-?(0|[1-9][0-9]*)(\.[0-9]+)?`, so no leading zeros and one decimal point at
+most). Only the first token may start with the space (`' -'`, `' 4'`); it
+is stripped before the value is converted. Once the number is complete, any token that starts with `,` or `}` is
 also allowed, and choosing one of them means "the number is over". That
 token is not kept: the code writes the real punctuation itself. Numbers are
 limited to 30 characters. `integer` parameters use the same mechanism
@@ -125,8 +139,11 @@ without the decimal point.
 
 ### Strings
 
-Inside a string, every token is allowed except those with a raw control
-character or an incomplete escape sequence (a lone backslash, for example).
+The first token must start with a space and the opening quote (`' "'`,
+`' "/'`...). If it also contains the closing quote (`' ""'`), the string is
+empty and complete. After it, every token is allowed except those with a
+raw control character or an incomplete escape sequence (a lone backslash,
+for example).
 Tokens that contain the closing quote end the string: only the text before
 the quote is kept. The text is then decoded with `json.loads`, so `\"`,
 `\\` and `\n` produce the right characters. A string is cut after 100 tokens
@@ -134,8 +151,8 @@ if the model never closes it.
 
 ### Booleans
 
-The model chooses between `true` and `false` with the same prefix mechanism
-used for function names.
+The model chooses between `' true'` and `' false'` (with the leading space)
+with the same prefix mechanism used for function names.
 
 ### Final check
 
@@ -145,16 +162,25 @@ is written with `allow_nan=False`, so it is always strict JSON.
 
 ## Design decisions
 
-- **Model behind a small interface.** The generation code depends only on a
-  protocol with `encode` and `get_logits` (`model_api.py`). The adapter for
-  the provided SDK (`llm.py`) uses only its public methods.
+- **Model behind a small interface.** The generation code only uses
+  `LanguageModel` (`model_api.py`), a pydantic class with `encode` and
+  `get_logits` that wraps the provided `Small_LLM_Model` and uses only its
+  public methods. Loading it is done in `llm.py`.
 - **`llm_sdk` imported lazily.** `importlib` is used inside the loader, so
   the rest of the project works without torch installed.
-- **Pydantic for the data.** Definitions, prompts, outputs, the vocabulary
-  and the SDK adapter are pydantic models. Input files are validated with
-  `TypeAdapter`.
+- **Pydantic for every class.** Definitions, prompts, outputs, the
+  vocabulary and the model wrapper are pydantic models; the only other
+  classes are exceptions. Input files are validated with `TypeAdapter`:
+  function names must be non-empty and unique, and Python-style type names
+  (`float`, `int`, `bool`, `str`) are accepted as aliases of the JSON-schema
+  ones.
+- **Fail early.** Both input files and the output path are checked before
+  the model (the slow part) is loaded.
 - **One exception per concern.** `FileError`, `ModelLoadError` and
-  `GenerationError` are caught in `__main__` and turned into messages.
+  `GenerationError` are caught in `__main__` and turned into messages. Any
+  other error during one prompt is reported and the next prompt is
+  processed; a last `except Exception` in `main` guarantees that the
+  program never ends with a traceback.
 - **Fixed text is not generated.** Keys and punctuation are never sampled,
   which removes whole classes of errors and saves model calls.
 - **Greedy selection.** Reproducible output, which is what we want here.
@@ -182,17 +208,44 @@ What follows from the design:
   string, one or two per boolean. The SDK recomputes the whole sequence on
   every call, so the length of the prompt matters.
 
-Measured on the evaluation hardware (fill in after running `make run`):
+Measured on an Intel Core i7-12700 (20 threads), 16 GB RAM, CPU only.
+"Extended set" is a harder file of 20 prompts over 10 functions (square
+root, multiplication, `integer` and `boolean` parameters, regex
+substitution with three string parameters, file path, SQL query, negative
+and large numbers, an empty string, accents, quotes and backslashes).
 
-| Item | Result |
-|---|---|
-| Machine (CPU, RAM) | TODO |
-| Model load time | TODO |
-| Time for all prompts of `function_calling_tests.json` | TODO |
-| Time per prompt (average) | TODO |
-| Correct function chosen | TODO / TODO |
-| Correct arguments extracted | TODO / TODO |
-| Valid JSON | TODO / TODO |
+| Item | `data/input` (5 prompts) | Extended set (20 prompts) |
+|---|---|---|
+| Model load time | about 3 s (cached) | about 3 s (cached) |
+| Time for all prompts | 21 s | 227 s |
+| Time per prompt (average) | about 4 s | about 11 s |
+| Correct function chosen | 5 / 5 | 20 / 20 |
+| Correct arguments extracted | 5 / 5 | 19 / 20 |
+| Valid, schema-compliant JSON | 5 / 5 | 20 / 20 |
+
+The only wrong argument of the extended set is a regex: for "Replace all
+numbers in ..." the model writes `34` instead of a pattern such as `\d+`.
+That is a limit of the model, not of the decoder. Before the fix described
+in "Token boundaries", the same set had 15 / 20 correct arguments.
+
+Time grows with the number of tokens written (long string arguments) and
+with the length of the prompt, because the SDK recomputes the whole
+sequence on every call. The first run also downloads the model.
+
+Where the time goes (cProfile on the extended set): 193 model calls with
+an average context of 278 tokens; 225 s of the 230 s are spent inside
+`get_logits_from_input_ids`, and only about 5 s in this project's code
+(masking, vocabulary lookups, regexes). The remaining levers are therefore
+fewer model calls and shorter contexts:
+
+- calls are already minimal: fixed text is never generated, and a name is
+  completed without the model as soon as only one option is left;
+- the prompt is mostly the function list (98 tokens for the 3 provided
+  functions, 251 for 10); the instruction is only 29 tokens, so cutting it
+  would save about 10% at the cost of accuracy;
+- a KV cache would make each call cost one token instead of the whole
+  context, but the SDK does not expose one and using its private attributes
+  or torch directly is forbidden by the subject.
 
 ## Challenges faced
 
@@ -210,6 +263,12 @@ Measured on the evaluation hardware (fill in after running `make run`):
 - **Knowing when a number ends.** The model has to be able to stop, but
   tokens such as `,` are merged with others in the vocabulary, so any token
   that starts with the delimiter is accepted as a stop signal.
+- **Values after a lone space.** The first version ended the context with
+  `"a": ` (space as its own token). The model then dropped minus signs and
+  the leading `/` of paths, returned `true` for "Disable", and filled an
+  empty string with words from the prompt. Looking at how the tokenizer
+  splits real JSON (`' -'`, `' "/'`, `' false'`, `' ""'`) showed the cause;
+  ending the context at the colon fixed all four cases.
 - **Tokens that mix content and the closing quote** (for example `o",`):
   only the part before the quote is kept.
 - **The SDK layout.** The provided folder is a complete uv project, so it is
@@ -217,20 +276,32 @@ Measured on the evaluation hardware (fill in after running `make run`):
 
 ## Testing strategy
 
-TODO: describe what you actually ran. Suggested content, to be adjusted to
-what was done:
-
-- **Provided examples.** Run `make run` on the files in `data/input/` and
-  check `data/output/function_calls.json`: valid JSON, exactly the keys
-  `prompt`, `name` and `parameters`, the right function and the right types.
-- **Edge cases listed in the subject.** Empty strings, large numbers,
-  special characters, ambiguous prompts and functions with several
-  parameters, using other `--functions_definition` and `--input` files.
-- **Error handling.** Missing file, invalid JSON, wrong structure, a
-  directory instead of a file, a file that is not UTF-8 and an output path
-  that cannot be written must end with a one-line message on stderr and
-  exit code 1, never with a traceback.
-- **Static checks.** `make lint` and `make lint-strict`.
+- **Provided examples.** `make run` on the files in `data/input/`, then
+  `data/output/function_calls.json` was checked: valid JSON, exactly the
+  keys `prompt`, `name` and `parameters`, the right function and the right
+  types (5 / 5).
+- **Edge cases listed in the subject.** An extended set of 20 prompts over
+  10 functions, passed with `--functions_definition` and `--input`: empty
+  string, negative and large numbers, accented characters, quotes and
+  backslashes in the prompt, functions with one to three parameters, and
+  `integer` and `boolean` types. The output was loaded with `json.load` and
+  each call compared with the expected one (results in "Performance
+  analysis").
+- **Unusual definitions.** A function without parameters (`{}` is written)
+  and a parameter of an unsupported type (`array`: that prompt is reported
+  as failed, the others are still written, exit code 1).
+- **Type aliases.** A definition using `float` and `int` produces a float
+  and an integer.
+- **Error handling.** Missing file, invalid JSON, wrong structure (missing
+  `prompt` key), empty list of functions, an empty or duplicated function
+  name, a file that is not UTF-8, a directory instead of a file, an output
+  path that is a directory, read-only or impossible to create, and an
+  unknown option. All of them except the last are detected before the
+  model is loaded. Each one ends with a clear message on stderr and a
+  non-zero exit code, never with a traceback. An empty list of prompts
+  writes `[]`.
+- **Static checks.** `make lint` and `make lint-strict` pass without
+  errors.
 
 ## Resources
 
@@ -245,8 +316,5 @@ what was done:
 
 ### Use of AI
 
-TODO: adjust this paragraph so that it is exactly true for you. Draft:
 Claude (Anthropic) was used to explain the concepts (tokens, logits,
-constrained decoding), to plan the architecture, to draft the modules and
-to review them. The code was read, run and tested, and every part of it can
-be explained by the author.
+constrained decoding), to plan the architecture, to draft the modules and to review them. The code was read, run and tested, and every part of it can be explained by the author.

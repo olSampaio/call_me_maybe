@@ -29,8 +29,10 @@ def generate_value(
     Args:
         model: Language model that provides the logits and `encode`.
         vocab: Token id -> text table of that model.
-        context_ids: Ids already in the context. They must end where the value
-            starts (for a string, right after the opening quote).
+        context_ids: Ids already in the context. They must end right after
+            the colon that follows the key: the first generated token brings
+            the space (and, for a string, the opening quote) with it, which is
+            how the tokenizer naturally splits JSON.
         type_name: Type of the parameter: number, integer, string or boolean.
 
     Returns:
@@ -129,9 +131,9 @@ def generate_call(
     for index, (key, spec) in enumerate(function.parameters.items()):
         if index:
             fixed += ", "
-        fixed += json.dumps(key, ensure_ascii=False) + ": "
-        if spec.type == "string":
-            fixed += '"'
+        # Stop right after the colon: the tokenizer merges the space with
+        # what follows (' -', ' true', ' "/'), so the model writes it.
+        fixed += json.dumps(key, ensure_ascii=False) + ":"
         context += model.encode(fixed)
         value, value_ids = generate_value(model, vocab, context, spec.type)
         context += value_ids
